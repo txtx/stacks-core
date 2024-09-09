@@ -2375,21 +2375,28 @@ impl BlockMinerThread {
 
         // find out which slot we're in. If we are not the latest sortition winner, we should not be sending anymore messages anyway
         let stackerdbs = StackerDBs::connect(&self.config.get_stacker_db_file_path(), false)?;
-        let (_, miners_info) =
-            NakamotoChainState::make_miners_stackerdb_config(&burn_db, &self.burn_block)?;
-        let idx = miners_info.get_latest_winner_index();
-        let sortitions = miners_info.get_sortitions();
-        let election_sortition = *sortitions
-            .get(idx as usize)
-            .expect("FATAL: latest winner index out of bounds");
-
         let miner_contract_id = boot_code_id(MINERS_NAME, self.config.is_mainnet());
         let mut miners_stackerdb =
             StackerDBSession::new(&self.config.node.rpc_bind, miner_contract_id);
 
+        let (_, miners_info) =
+            NakamotoChainState::make_miners_stackerdb_config(&burn_db, &self.burn_block)?;
+        let sortitions = miners_info.get_sortitions();
+
+        let ih = burn_db.index_handle(&self.burn_block.sortition_id);
+        let last_winner_snapshot = ih.get_last_snapshot_with_sortition(self.burn_block.block_height)?;
+        let election_sortition = last_winner_snapshot.consensus_hash;
+        info!(
+            "MINER SORTITIONS: {:?}, BURN BLOCK: {:?}, TIP: {:?}, ELECTION SORTITION: {:?}",
+            &sortitions,
+            self.burn_block.consensus_hash,
+            self.burn_block.canonical_stacks_tip_consensus_hash,
+            election_sortition
+        );
         let mock_proposal =
             MockProposal::new(peer_info, self.config.burnchain.chain_id, &mining_key);
 
+        debug!("USING ELECTION SORTITION: {election_sortition:?}");
         info!("Sending mock proposal to stackerdb: {mock_proposal:?}");
 
         if let Err(e) = SignCoordinator::send_miners_message(
@@ -3795,7 +3802,7 @@ impl RelayerThread {
         }
 
         let Some(mut miner_thread_state) =
-            self.create_block_miner(registered_key, last_burn_block, issue_timestamp_ms)
+            self.create_block_miner(registered_key, last_burn_block.clone(), issue_timestamp_ms)
         else {
             return false;
         };
@@ -3804,10 +3811,13 @@ impl RelayerThread {
             .name(format!("miner-block-{}", self.local_peer.data_url))
             .stack_size(BLOCK_PROCESSOR_STACK_SIZE)
             .spawn(move || {
-                if let Err(e) = miner_thread_state.send_mock_miner_messages() {
-                    warn!("Failed to send mock miner messages: {}", e);
+                let result = miner_thread_state.run_tenure();
+                if result.is_some() {
+                    if let Err(e) = miner_thread_state.send_mock_miner_messages() {
+                        warn!("Failed to send mock miner messages: {}", e);
+                    }
                 }
-                miner_thread_state.run_tenure()
+                result
             })
             .inspect_err(|e| error!("Relayer: Failed to start tenure thread: {e:?}"))
         {

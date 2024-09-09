@@ -411,12 +411,12 @@ impl SignCoordinator {
                     Ok(())
                 } else {
                     warn!("Failed to write message to stackerdb: {ack:?}");
-                    Err("Failed to write message to stackerdb".into())
+                    Err(format!("{ack:?}"))
                 }
             }
             Err(e) => {
                 warn!("Failed to write message to stackerdb {e:?}");
-                Err("Failed to write message to stackerdb".into())
+                Err(format!("{e:?}"))
             }
         }
     }
